@@ -209,21 +209,40 @@ class BaseEngine(ABC):
 
     def _optimize_weights(self, y_true: pd.Series, preds: Dict[str, np.ndarray]) -> Tuple[Dict[str, float], float]:
         """
-        Internal: Finds optimal ensemble weights using SLSQP to minimize loss.
+        Finds optimal ensemble weights using SLSQP.
+        Fixed to handle Multiclass (3D Tensor) correctly.
         """
         model_names = list(preds.keys())
+        y_true_np = y_true.values
+        is_classification = self.task in {ProblemType.BINARY_CLASSIFICATION, ProblemType.MULTICLASS_CLASSIFICATION}
+        
+        # ✅ FIX 1: จัดการ Shape ข้อมูลให้ถูกต้อง
+        # ถ้าเป็น Multiclass: preds[name] คือ (N, C)
+        # เราต้อง Stack เป็น (N, C, M) เพื่อให้ dot กับ weights (M,) ได้ผลลัพธ์ (N, C)
         
         try:
-            pred_matrix = np.column_stack([preds[name] for name in model_names])
+            # ดึง prediction array ตัวแรกมาดู shape
+            first_pred = preds[model_names[0]]
+            
+            if is_classification and first_pred.ndim == 2:
+                # Multiclass Case: Stack along last axis -> (N, Classes, Models)
+                pred_tensor = np.stack([preds[name] for name in model_names], axis=-1)
+            else:
+                # Regression/Binary(1D): Stack columns -> (N, Models)
+                pred_tensor = np.column_stack([preds[name] for name in model_names])
+                
         except ValueError:
              return self._fallback_optimize_weights(y_true, preds)
 
-        y_true_np = y_true.values
-        is_classification = self.task in {ProblemType.BINARY_CLASSIFICATION, ProblemType.MULTICLASS_CLASSIFICATION}
-
         def loss_func(weights):
-            final_pred = np.dot(pred_matrix, weights)
+            # ✅ FIX 2: การคูณ Matrix ให้รองรับทั้ง 2D และ 3D
+            # broadcasting weights: (M,) จะไปคูณกับ dimension สุดท้ายของ pred_tensor
+            
+            # ผลลัพธ์จะเป็น (N, C) สำหรับ multiclass หรือ (N,) สำหรับ regression
+            final_pred = np.dot(pred_tensor, weights)
+            
             if is_classification:
+                # Clip เพื่อป้องกัน Log Loss ระเบิด (log(0))
                 final_pred = np.clip(final_pred, 1e-15, 1 - 1e-15)
                 return log_loss(y_true_np, final_pred)
             else:
@@ -242,14 +261,18 @@ class BaseEngine(ABC):
             return self._fallback_optimize_weights(y_true, preds)
 
         weights_dict = {name: float(w) for name, w in zip(model_names, best_weights)}
+        
+        # กรอง weight ที่น้อยมากๆ ออกเพื่อลด noise
         weights_dict = {k: v for k, v in weights_dict.items() if v > 0.01}
         
+        # Normalize ให้รวมกันได้ 1 เสมอ
         total = sum(weights_dict.values())
         if total > 0:
             weights_dict = {k: v/total for k, v in weights_dict.items()}
         else:
             return self._fallback_optimize_weights(y_true, preds)
 
+        # ถ้าเป็น Regression แปลง MSE กลับเป็น RMSE เพื่อให้ดูง่าย
         if not is_classification:
             best_score = np.sqrt(best_score)
 
@@ -260,20 +283,31 @@ class BaseEngine(ABC):
         scores = {}
         is_classification = self.task in {ProblemType.BINARY_CLASSIFICATION, ProblemType.MULTICLASS_CLASSIFICATION}
         
+        calculated_score = 0.0
+        
         for name, pred in preds.items():
             try:
-                if is_classification: err = log_loss(y_true, pred)
-                else: err = mean_squared_error(y_true, pred)
-            except: err = float('inf')
+                if is_classification: 
+                    # Clip ก่อนคำนวณ fallback
+                    safe_pred = np.clip(pred, 1e-15, 1 - 1e-15)
+                    err = log_loss(y_true, safe_pred)
+                else: 
+                    err = mean_squared_error(y_true, pred)
+            except: 
+                err = float('inf')
             
             scores[name] = 1 / (err + 1e-9)
             
+            # เก็บ score ของโมเดลแรกไว้เป็นตัวแทนคร่าวๆ (ดีกว่า return 0.0)
+            if calculated_score == 0.0 and err != float('inf'):
+                calculated_score = err
+            
         total = sum(scores.values())
         if total == 0: 
-            return {k: 1.0/len(scores) for k in scores}, 0.0
+            return {k: 1.0/len(scores) for k in scores}, calculated_score
         
         weights = {k: v/total for k, v in scores.items()}
-        return weights, 0.0
+        return weights, calculated_score
 
     def _create_blueprint(self, dataset: Dataset, score: float) -> ModelBlueprint:
         if self.task == ProblemType.REGRESSION: metric_name = "rmse"

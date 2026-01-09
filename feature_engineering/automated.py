@@ -6,7 +6,7 @@ from iris.foundation.types import ProblemType
 
 class AutoFeatureEngineer:
     """
-    🛠️ Auto Feature Engineer:
+    Auto Feature Engineer:
     - Creates Interaction Features (A * B)
     - Performs Target Encoding (for high cardinality cats)
     - Selects Best Features (K-Best)
@@ -17,6 +17,7 @@ class AutoFeatureEngineer:
         self.feature_names_: List[str] = []
         self.target_encodings_: Dict[str, Dict[str, float]] = {}
         self.global_mean_: float = 0.0
+        self.interaction_cols_: List[str] = []
         
     def fit_transform(self, X: pd.DataFrame, y: pd.Series, task: ProblemType) -> pd.DataFrame:
         X_new = X.copy()
@@ -24,7 +25,8 @@ class AutoFeatureEngineer:
         
         num_cols = X.select_dtypes(include=[np.number]).columns.tolist()
         if len(num_cols) >= 2 and n_samples < 5000:
-            X_new = self._add_interactions(X_new, num_cols[:5]) # Limit top 5 to avoid explosion
+            self.interaction_cols_ = num_cols[:5] # Limit top 5 to avoid explosion
+            X_new = self._add_interactions(X_new, self.interaction_cols_)
         
         cat_cols = X.select_dtypes(include=['object', 'category']).columns
         if task in [ProblemType.REGRESSION, ProblemType.BINARY_CLASSIFICATION]:
@@ -47,6 +49,10 @@ class AutoFeatureEngineer:
     def transform(self, X: pd.DataFrame) -> pd.DataFrame:
         """Apply the same transformations to new data."""
         X_new = X.copy()
+        
+        # 0. Re-apply Interactions
+        if self.interaction_cols_:
+             X_new = self._add_interactions(X_new, self.interaction_cols_)
         
         # 1. Re-apply Target Encoding
         for col, encoding_map in self.target_encodings_.items():

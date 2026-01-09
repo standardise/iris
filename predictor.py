@@ -1,10 +1,10 @@
-import logging
-from typing import Optional, Union, Dict, Any
+from sklearn.preprocessing import LabelEncoder
+from typing import Optional, Union, Dict
 from pathlib import Path
 import pandas as pd
 import numpy as np
+import logging
 import joblib
-import warnings
 
 from iris.dataset import Dataset
 from iris.engine.factory import EngineFactory
@@ -29,6 +29,7 @@ class Iris:
         self.verbose = verbose
         self._engine = None        
         self._blueprint: Optional[ModelBlueprint] = None
+        self._label_encoder: Optional[LabelEncoder] = None
         
         if self.verbose:
             logging.basicConfig(
@@ -57,12 +58,30 @@ class Iris:
             logger.info(f"Configuration: time_limit={time_limit}s, future_steps={future_steps}")
 
         try:
+            
+            is_classification = dataset.task_type in (
+                ProblemType.BINARY_CLASSIFICATION, 
+                ProblemType.MULTICLASS_CLASSIFICATION
+            )
+            
+            original_target_data = dataset.df[dataset.target_name].copy()
+
+            if is_classification:
+                if self.verbose: logger.info("Detected classification task. Encoding target variable...")
+                self._label_encoder = LabelEncoder()
+                encoded_y = self._label_encoder.fit_transform(dataset.df[dataset.target_name])
+                dataset.df[dataset.target_name] = encoded_y
+            else:
+                self._label_encoder = None
+
             self._engine = EngineFactory.create(
                 dataset.task_type, 
                 future_steps=future_steps
             )
             
             self._blueprint = self._engine.fit(dataset, time_limit=time_limit)
+            
+            dataset.df[dataset.target_name] = original_target_data
             
             if self.verbose:
                 val_score = self._blueprint.metrics.scores.get('val_score', 'N/A')
@@ -92,18 +111,26 @@ class Iris:
             logger.info(f"Generating predictions for {len(df_input)} samples...")
 
         raw_pred = self._engine.predict(df_input)
-        task = ProblemType(self._blueprint.task_type)
+        print(raw_pred)
         
+        task = ProblemType(self._blueprint.task_type)
         probabilities = None
         pred_series = None
 
         if task in (ProblemType.BINARY_CLASSIFICATION, ProblemType.MULTICLASS_CLASSIFICATION):
             probabilities = raw_pred
+            
             if raw_pred.ndim == 1:
-                 pred_labels = (raw_pred > 0.5).astype(int)
+                 pred_indices = (raw_pred > 0.5).astype(int)
             else:
-                 pred_labels = np.argmax(raw_pred, axis=1)
-            pred_series = pd.Series(pred_labels, index=df_input.index, name="prediction")
+                 pred_indices = np.argmax(raw_pred, axis=1)
+
+            if self._label_encoder:
+                final_labels = self._label_encoder.inverse_transform(pred_indices)
+            else:
+                final_labels = pred_indices
+
+            pred_series = pd.Series(final_labels, index=df_input.index, name="prediction")
         else:
             pred_series = pd.Series(raw_pred, index=df_input.index, name="prediction")
 
@@ -111,6 +138,43 @@ class Iris:
             return self._generate_explanation(df_input, pred_series, probabilities)
         
         return pred_series
+
+    def predict_proba(self, data: Union[pd.DataFrame, Dataset]) -> pd.DataFrame:
+        """
+        Generates class probabilities for the input data.
+        Returns a DataFrame where columns correspond to class labels.
+        """
+        if not self.is_trained:
+            raise RuntimeError("Model has not been trained. Call 'learn()' first.")
+
+        if isinstance(data, Dataset):
+            df_input = data.features
+        else:
+            df_input = data.copy()
+            if self._blueprint and self._blueprint.target_column in df_input.columns:
+                df_input = df_input.drop(columns=[self._blueprint.target_column])
+        
+        raw_pred = self._engine.predict(df_input)
+        
+        task = ProblemType(self._blueprint.task_type)
+        if task not in (ProblemType.BINARY_CLASSIFICATION, ProblemType.MULTICLASS_CLASSIFICATION):
+            raise RuntimeError("predict_proba is only applicable for classification tasks.")
+
+        if self._label_encoder:
+            # Get class names from encoder
+            col_names = self._label_encoder.classes_
+        else:
+            # Fallback if no encoder (e.g. integer targets)
+            n_classes = raw_pred.shape[1] if raw_pred.ndim > 1 else 2
+            col_names = [f"class_{i}" for i in range(n_classes)]
+
+        # Handle binary case where raw_pred might be (N,) or (N, 1) or (N, 2)
+        # Assuming engine returns (N, C) consistently for classification
+        if raw_pred.shape[1] != len(col_names):
+             # Mismatch fallback
+             col_names = [f"col_{i}" for i in range(raw_pred.shape[1])]
+
+        return pd.DataFrame(raw_pred, columns=col_names, index=df_input.index)
 
     def _generate_explanation(self, df_input, pred_series, probabilities) -> PredictionAudit:
         try:
@@ -172,6 +236,9 @@ class Iris:
                  pred_labels = (raw_pred > 0.5).astype(int)
             else:
                  pred_labels = np.argmax(raw_pred, axis=1)
+
+            if self._label_encoder:
+                pred_labels = self._label_encoder.inverse_transform(pred_labels)
 
             metrics["accuracy"] = float(accuracy_score(y_true, pred_labels))
             metrics["f1"] = float(f1_score(y_true, pred_labels, average='weighted'))

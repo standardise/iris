@@ -27,6 +27,8 @@ class Dataset:
     @property
     def features(self) -> pd.DataFrame:
         cols_to_drop = [self.target_name]
+        if self.id_col and self.id_col in self.df.columns:
+            cols_to_drop.append(self.id_col)
         return self.df.drop(columns=cols_to_drop)
 
     @property
