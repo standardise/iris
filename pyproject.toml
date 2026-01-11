@@ -24,7 +24,8 @@ dependencies = [
     "pydantic>=2.11.10",
     "lightgbm>=4.6.0",
     "catboost>=1.2.8",
-    "shap>=0.50.0" 
+    "shap>=0.50.0",
+    "chardet>=5.2.0"
 ]
 
 [project.optional-dependencies]
