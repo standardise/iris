@@ -7,7 +7,7 @@ name = "iris-automl"
 version = "0.1.0"
 description = "Friendly AutoML Library"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 authors = [
   { name = "Saharat Vithchataya", email = "saharat.vithchataya@gmail.com" },
 ]
