@@ -126,14 +126,28 @@ class BaseEngine(ABC):
         logger.info("Optimizing ensemble weights using SLSQP...")
         self.model_weights, best_score = self._optimize_weights(y_val, val_predictions)
 
-        logger.info("Refitting active models on the full dataset...")
-        for name, weight in self.model_weights.items():
-            if weight > 0:
+        # Refit Logic Optimization
+        elapsed_so_far = time.time() - start_time
+        remaining_time = time_limit - elapsed_so_far
+        
+        active_models = [name for name, w in self.model_weights.items() if w > 0]
+        
+        if active_models and remaining_time > 5:
+            logger.info(f"Refitting {len(active_models)} active models on full dataset (Time left: {remaining_time:.1f}s)...")
+            
+            # Distribute remaining time among active models
+            time_per_model = remaining_time / len(active_models)
+            
+            for name in active_models:
                 model = self.trained_models[name]
                 try:
-                    model.fit(X, y, time_limit=time_limit) 
+                    # Use at least 5 seconds or the allocated share
+                    budget = max(5, int(time_per_model))
+                    model.fit(X, y, time_limit=budget) 
                 except Exception as e:
                     logger.warning(f"Refit failed for {name}: {e}. Keeping the validation-trained version.")
+        else:
+            logger.info("Skipping refit due to time constraints. Using validation-trained models.")
         
         return self._create_blueprint(dataset, best_score)
 

@@ -25,7 +25,9 @@ dependencies = [
     "lightgbm>=4.6.0",
     "catboost>=1.2.8",
     "shap>=0.50.0",
-    "chardet>=5.2.0"
+    "chardet>=5.2.0",
+    "polars>=1.0.0",
+    "scikit-learn-intelex>=2024.0"
 ]
 
 [project.optional-dependencies]

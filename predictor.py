@@ -1,3 +1,9 @@
+try:
+    from sklearnex import patch_sklearn
+    patch_sklearn()
+except ImportError:
+    pass
+
 from sklearn.preprocessing import LabelEncoder
 from typing import Optional, Union, Dict
 from pathlib import Path
