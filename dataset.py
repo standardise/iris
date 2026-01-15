@@ -27,8 +27,13 @@ class Dataset:
     @property
     def features(self) -> pd.DataFrame:
         cols_to_drop = [self.target_name]
-        if self.id_col and self.id_col in self.df.columns:
-            cols_to_drop.append(self.id_col)
+        
+        # Only drop ID column if it's NOT a Time Series task
+        # In Time Series, ID column is used to group series (e.g. Store_ID)
+        if self.task_type != ProblemType.TIME_SERIES_FORECASTING:
+            if self.id_col and self.id_col in self.df.columns:
+                cols_to_drop.append(self.id_col)
+                
         return self.df.drop(columns=cols_to_drop)
 
     @property
@@ -64,7 +69,7 @@ class Dataset:
             try:
                 self.df[self.date_col] = pd.to_datetime(self.df[self.date_col])
                 self.df = self.df.sort_values(by=self.date_col)
-                self.df.set_index(self.date_col, inplace=True)
+                self.df.set_index(self.date_col, inplace=True, drop=False)
             except Exception as e:
                 raise DataError(f"Could not convert '{self.date_col}' to datetime: {e}")
 

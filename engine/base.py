@@ -7,6 +7,7 @@ from typing import List, Dict, Tuple, Optional, Any
 from scipy.optimize import minimize
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error, log_loss
+from sklearn.linear_model import Ridge, LogisticRegression
 
 from iris.dataset import Dataset
 from iris.foundation.types import ModelBlueprint, FeatureSchema, ModelMetrics
@@ -30,6 +31,7 @@ class BaseEngine(ABC):
     - Dynamic Time Budget Management for each model.
     - Safe Training Loop (catching errors per model).
     - Ensemble Weight Optimization using SLSQP.
+    - Stacking (Blended Ensemble).
 
     Attributes:
         task (ProblemType): The type of machine learning problem (Regression/Classification).
@@ -45,6 +47,8 @@ class BaseEngine(ABC):
         self.model_weights: Dict[str, float] = {}
         self.feature_dtypes = {}
         self.feature_engineer: Optional[Any] = None 
+        self.meta_model: Optional[Any] = None
+        self.stacking_active: bool = False
 
     def register_candidates(self, models: List[CandidateModel]):
         """Registers a list of candidate models to be trained."""
@@ -93,6 +97,48 @@ class BaseEngine(ABC):
 
         logger.info(f"Engine execution started. Training set: {len(X_train)} samples, Validation set: {len(X_val)} samples.")
 
+        # --- Large Dataset Optimization: Candidate Selection ---
+        if len(X_train) > 50000:
+            logger.info("Large dataset detected (>50k samples). Running Candidate Selection on subsample...")
+            try:
+                # Subsample 50k
+                sub_size = 50000
+                if self.task in [ProblemType.BINARY_CLASSIFICATION, ProblemType.MULTICLASS_CLASSIFICATION]:
+                    X_sub, _, y_sub, _ = train_test_split(X_train, y_train, train_size=sub_size, stratify=y_train, random_state=42)
+                else:
+                    X_sub, _, y_sub, _ = train_test_split(X_train, y_train, train_size=sub_size, random_state=42)
+                
+                selection_scores = {}
+                # Allocate 30% of budget or at least 20s for selection
+                sel_budget = max(int(time_limit * 0.3), 20)
+                budget_per_model = max(int(sel_budget / len(self.candidates)), 5)
+                
+                for model in self.candidates:
+                    try:
+                        model.fit(X_sub, y_sub, time_limit=budget_per_model)
+                        preds = model.predict(X_val)
+                        
+                        score = float('inf')
+                        if self.task in [ProblemType.BINARY_CLASSIFICATION, ProblemType.MULTICLASS_CLASSIFICATION]:
+                            # Clip for safety
+                            preds = np.clip(preds, 1e-15, 1 - 1e-15)
+                            score = log_loss(y_val, preds)
+                        else:
+                            score = mean_squared_error(y_val, preds)
+                        
+                        selection_scores[model.name] = score
+                    except Exception as e:
+                        logger.warning(f"Selection training failed for {model.name}: {e}")
+                
+                # Keep Top 2
+                if selection_scores:
+                    best_names = sorted(selection_scores, key=selection_scores.get)[:2]
+                    logger.info(f"Selected best candidates: {best_names}")
+                    self.candidates = [c for c in self.candidates if c.name in best_names]
+                    
+            except Exception as e:
+                logger.warning(f"Candidate selection failed: {e}. Proceeding with all models.")
+
         if not self.candidates: 
             raise RuntimeError("No models registered. Please register models via the EngineFactory.")
         
@@ -126,11 +172,61 @@ class BaseEngine(ABC):
         logger.info("Optimizing ensemble weights using SLSQP...")
         self.model_weights, best_score = self._optimize_weights(y_val, val_predictions)
 
+        # --- Stacking (Blended Ensemble) ---
+        # Construct Meta-Features
+        model_names = list(val_predictions.keys())
+        first_pred = val_predictions[model_names[0]]
+        is_classification = self.task in {ProblemType.BINARY_CLASSIFICATION, ProblemType.MULTICLASS_CLASSIFICATION}
+        
+        X_meta = None
+        if is_classification and first_pred.ndim == 2:
+             # Multiclass: (N, C, M) -> flatten to (N, C*M) or just use probabilities as features
+             X_meta = np.hstack([val_predictions[name] for name in model_names])
+        else:
+             # Regression/Binary(1D): (N, M)
+             X_meta = np.column_stack([val_predictions[name] for name in model_names])
+             
+        # Train Meta-Learner
+        meta_score = float('inf')
+        try:
+            if is_classification:
+                self.meta_model = LogisticRegression(max_iter=1000)
+                self.meta_model.fit(X_meta, y_val)
+                meta_pred = self.meta_model.predict_proba(X_meta)
+                if first_pred.ndim == 1: meta_pred = meta_pred[:, 1] # Binary case adjustment
+                
+                meta_pred = np.clip(meta_pred, 1e-15, 1 - 1e-15)
+                meta_score = log_loss(y_val, meta_pred)
+            else:
+                self.meta_model = Ridge(alpha=1.0)
+                self.meta_model.fit(X_meta, y_val)
+                meta_pred = self.meta_model.predict(X_meta)
+                meta_score = np.sqrt(mean_squared_error(y_val, meta_pred))
+                
+            logger.info(f"Stacking Score: {meta_score:.4f} vs Weighted Score: {best_score:.4f}")
+            
+            if meta_score < best_score:
+                self.stacking_active = True
+                best_score = meta_score
+                logger.info(">> Stacking Strategy WON. Using Meta-Learner.")
+            else:
+                self.stacking_active = False
+                self.meta_model = None
+                logger.info(">> Weighted Ensemble WON. Using SLSQP Weights.")
+                
+        except Exception as e:
+            logger.warning(f"Stacking training failed: {e}. Fallback to Weighted Ensemble.")
+            self.stacking_active = False
+
         # Refit Logic Optimization
         elapsed_so_far = time.time() - start_time
         remaining_time = time_limit - elapsed_so_far
         
-        active_models = [name for name, w in self.model_weights.items() if w > 0]
+        # If Stacking, we need all models. If Weighted, only non-zero weights.
+        if self.stacking_active:
+            active_models = list(self.trained_models.keys())
+        else:
+            active_models = [name for name, w in self.model_weights.items() if w > 0]
         
         if active_models and remaining_time > 5:
             logger.info(f"Refitting {len(active_models)} active models on full dataset (Time left: {remaining_time:.1f}s)...")
@@ -171,11 +267,16 @@ class BaseEngine(ABC):
                 pass 
 
         preds = {}
-        for name, weight in self.model_weights.items():
-            if weight > 0 and name in self.trained_models:
+        target_models = self.trained_models.keys() if self.stacking_active else [n for n, w in self.model_weights.items() if w > 0]
+
+        for name in target_models:
+            if name in self.trained_models:
                 preds[name] = self.trained_models[name].predict(X_processed)
         
-        return self._ensemble_predict(preds)
+        if self.stacking_active:
+            return self._stacking_predict(preds)
+        else:
+            return self._ensemble_predict(preds)
 
     def explain(self, X: pd.DataFrame) -> Tuple[float, Dict[str, float]]:
         """
@@ -197,7 +298,11 @@ class BaseEngine(ABC):
         total_base = 0.0
         total_contribs = {col: 0.0 for col in X_processed.columns}
         
-        for name, weight in self.model_weights.items():
+        # Explain only weighted ensemble for now (Stacking explainability is complex)
+        # Fallback to weights if stacking is active for explanation approx
+        weights = self.model_weights
+        
+        for name, weight in weights.items():
             if weight > 0 and name in self.trained_models:
                 try:
                     base, contribs = self.trained_models[name].explain(X_processed)
@@ -220,6 +325,29 @@ class BaseEngine(ABC):
             weight = self.model_weights.get(name, 0.0)
             final_pred += (pred * weight)
         return final_pred
+
+    def _stacking_predict(self, preds: Dict[str, np.ndarray]) -> np.ndarray:
+        model_names = list(preds.keys()) 
+        # Note: Ideally we ensure strict order match with fit. 
+        # Since 'preds' iterates over 'trained_models' keys which is insertion-ordered (Python 3.7+), 
+        # and 'fit' used 'val_predictions' which also followed insertion order of 'candidates', this is safe.
+        
+        is_classification = self.task in {ProblemType.BINARY_CLASSIFICATION, ProblemType.MULTICLASS_CLASSIFICATION}
+        first_pred = next(iter(preds.values()))
+        
+        X_meta = None
+        if is_classification and first_pred.ndim == 2:
+             X_meta = np.hstack([preds[name] for name in model_names])
+        else:
+             X_meta = np.column_stack([preds[name] for name in model_names])
+             
+        if is_classification:
+            final_prob = self.meta_model.predict_proba(X_meta)
+            # Match output shape of base models
+            if first_pred.ndim == 1: return final_prob[:, 1]
+            return final_prob
+        else:
+            return self.meta_model.predict(X_meta)
 
     def _optimize_weights(self, y_true: pd.Series, preds: Dict[str, np.ndarray]) -> Tuple[Dict[str, float], float]:
         """
@@ -330,11 +458,11 @@ class BaseEngine(ABC):
 
         return ModelBlueprint(
             task_type=self.task.value,
-            strategy_used=self.__class__.__name__,
+            strategy_used="Stacking" if self.stacking_active else "WeightedEnsemble",
             is_timeseries=(dataset.date_col is not None),
             input_features=[FeatureSchema(name=c, dtype=str(t)) for c, t in self.feature_dtypes.items()],
             target_column=dataset.target_name,
-            active_models=list(self.model_weights.keys()),
+            active_models=list(self.trained_models.keys() if self.stacking_active else self.model_weights.keys()),
             ensemble_weights=self.model_weights,
             metrics=ModelMetrics(main_metric=metric_name, scores={"val_score": float(score)})
         )

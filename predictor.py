@@ -82,7 +82,9 @@ class Iris:
 
             self._engine = EngineFactory.create(
                 dataset.task_type, 
-                future_steps=future_steps
+                future_steps=future_steps,
+                date_col=dataset.date_col,
+                id_col=dataset.id_col
             )
             
             self._blueprint = self._engine.fit(dataset, time_limit=time_limit)
