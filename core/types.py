@@ -42,3 +42,21 @@ class Explanation(BaseModel):
 class LoadMode(str, Enum):
     Default = "default"
     Lazy = "lazy"
+
+class VisualizationType(str, Enum):
+    TIME_SERIES = "time_series"
+    BAR_CHART = "bar_chart"
+    SCATTER = "scatter"
+    METRIC_CARD = "metric_card"
+
+class VisualizationData(BaseModel):
+    type: VisualizationType
+    title: str
+    data: List[Dict[str, Any]] # JSON-friendly for frontend (e.g. Recharts)
+    axes: Dict[str, str] = {} # e.g. {"x": "date", "y": "sales"}
+
+class InferenceResult(BaseModel):
+    prediction: Any # The core result (value, class, cluster ID)
+    summary: str # Human-readable explanation
+    details: Dict[str, Any] = {} # Advanced metrics/params
+    visualization: Optional[VisualizationData] = None # Plotting data

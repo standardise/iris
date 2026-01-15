@@ -18,7 +18,8 @@ from iris.core.types import (
     ModelBlueprint, 
     PredictionAudit, 
     Explanation,
-    ProblemType
+    ProblemType,
+    InferenceResult
 )
 
 logger = logging.getLogger(__name__)
@@ -119,7 +120,6 @@ class Iris:
             logger.info(f"Generating predictions for {len(df_input)} samples...")
 
         raw_pred = self._engine.predict(df_input)
-        print(raw_pred)
         
         task = ProblemType(self._blueprint.task_type)
         probabilities = None
@@ -147,6 +147,22 @@ class Iris:
         
         return pred_series
 
+    def predict_response(self, data: Union[pd.DataFrame, Dataset]) -> InferenceResult:
+        """
+        Generates a rich prediction response with visualization data.
+        """
+        if not self.is_trained:
+            raise RuntimeError("Model has not been trained. Call 'learn()' first.")
+
+        if isinstance(data, Dataset):
+            df_input = data.features
+        else:
+            df_input = data.copy()
+            if self._blueprint and self._blueprint.target_column in df_input.columns:
+                df_input = df_input.drop(columns=[self._blueprint.target_column])
+        
+        return self._engine.predict_response(df_input)
+
     def predict_proba(self, data: Union[pd.DataFrame, Dataset]) -> pd.DataFrame:
         """
         Generates class probabilities for the input data.
@@ -169,12 +185,17 @@ class Iris:
             raise RuntimeError("predict_proba is only applicable for classification tasks.")
 
         if self._label_encoder:
+            # Get class names from encoder
             col_names = self._label_encoder.classes_
         else:
+            # Fallback if no encoder (e.g. integer targets)
             n_classes = raw_pred.shape[1] if raw_pred.ndim > 1 else 2
             col_names = [f"class_{i}" for i in range(n_classes)]
 
+        # Handle binary case where raw_pred might be (N,) or (N, 1) or (N, 2)
+        # Assuming engine returns (N, C) consistently for classification
         if raw_pred.shape[1] != len(col_names):
+             # Mismatch fallback
              col_names = [f"col_{i}" for i in range(raw_pred.shape[1])]
 
         return pd.DataFrame(raw_pred, columns=col_names, index=df_input.index)

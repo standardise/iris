@@ -70,24 +70,43 @@ Iris handles multiple stores, items, or sensors in a single global model. It cap
 ```python
 from iris import Iris, Dataset
 
-# Input: date, store_id, product_id, sales, promotion
-dataset = Dataset(
-    src=df,
-    target="sales",
-    date_column="date",
-    id_column="store_id" # Groups series automatically
-)
-
+dataset = Dataset(src=df, target="sales", date_column="date", id_column="store_id")
 model = Iris()
-model.learn(dataset, time_limit=120)
+model.learn(dataset)
 
-# Forecast the future by simply providing future dates and IDs
-future_df = pd.DataFrame({
-    "date": ["2024-01-01", "2024-01-02"],
-    "store_id": ["Store_A", "Store_A"]
-})
-forecast = model.predict(future_df)
+# Use predict_response for rich summaries and plot data
+result = model.predict_response(future_df)
+print(result.summary)
 ```
+
+### 3. Unsupervised Analysis (Clustering & Anomaly)
+
+Discover patterns in your data without a target variable.
+
+```python
+from iris import Analyzer, Dataset
+
+# Clustering / Segmentation
+analyzer = Analyzer(task="clustering")
+analyzer.fit(dataset, n_clusters=5)
+df_clustered = analyzer.get_clusters(dataset)
+
+# Anomaly / Fraud Detection
+analyzer = Analyzer(task="anomaly")
+analyzer.fit(dataset)
+df_anomalies = analyzer.get_anomalies(dataset)
+```
+
+## 📖 Rich Output Format
+
+The `predict_response()` method returns an `InferenceResult` object designed for frontend integration:
+
+| Field | Type | Description |
+| :--- | :--- | :--- |
+| `prediction` | `Any` | The raw result (value, class, or cluster ID). |
+| `summary` | `str` | A human-readable summary (e.g. "Predicted 15% above average"). |
+| `visualization` | `Object` | JSON-friendly data for charts (Time Series, Bar, or Metric Card). |
+| `details` | `dict` | Advanced metrics and model metadata. |
 
 ## Core Technologies
 

@@ -27,6 +27,10 @@ class Analyzer:
         if self.verbose:
             logging.info("Analysis model trained successfully.")
 
+    def predict_response(self, dataset: Dataset):
+        """Returns rich analysis result (InferenceResult)."""
+        return self._engine.predict_response(dataset)
+
     def get_clusters(self, dataset: Dataset) -> pd.DataFrame:
         """Returns the dataset with an added 'cluster' column."""
         if self.task != 'clustering':

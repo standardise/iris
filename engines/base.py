@@ -10,7 +10,7 @@ from sklearn.metrics import mean_squared_error, log_loss
 from sklearn.linear_model import Ridge, LogisticRegression
 
 from iris.dataset import Dataset
-from iris.core.types import ModelBlueprint, FeatureSchema, ModelMetrics
+from iris.core.types import ModelBlueprint, FeatureSchema, ModelMetrics, InferenceResult, VisualizationData, VisualizationType
 from iris.core.types import ProblemType
 from iris.models.base import CandidateModel
 
@@ -25,19 +25,6 @@ except ImportError:
 class BaseEngine(ABC):
     """
     The Orchestrator for the AutoML process.
-
-    Responsibilities:
-    - Automated Feature Engineering execution.
-    - Dynamic Time Budget Management for each model.
-    - Safe Training Loop (catching errors per model).
-    - Ensemble Weight Optimization using SLSQP.
-    - Stacking (Blended Ensemble).
-
-    Attributes:
-        task (ProblemType): The type of machine learning problem (Regression/Classification).
-        candidates (List[CandidateModel]): List of models to be trained.
-        trained_models (Dict[str, CandidateModel]): Dictionary of successfully trained models.
-        model_weights (Dict[str, float]): Ensemble weights for each model.
     """
 
     def __init__(self, task: ProblemType):
@@ -49,28 +36,109 @@ class BaseEngine(ABC):
         self.feature_engineer: Optional[Any] = None 
         self.meta_model: Optional[Any] = None
         self.stacking_active: bool = False
+        self.train_stats: Dict[str, Any] = {} # For contextual predictions
 
     def register_candidates(self, models: List[CandidateModel]):
-        """Registers a list of candidate models to be trained."""
         self.candidates.extend(models)
 
+    def _fit_candidates_and_ensemble(self, X_train, y_train, X_val, y_val, time_limit, start_time):
+        """
+        Internal method to train candidates, optimize weights, and try stacking.
+        Enforces column sorting for consistency.
+        """
+        X_train = X_train.reindex(sorted(X_train.columns), axis=1)
+        X_val = X_val.reindex(sorted(X_val.columns), axis=1)
+        
+        val_predictions = {}
+        
+        for i, model in enumerate(self.candidates):
+            elapsed = time.time() - start_time
+            remaining_total_time = time_limit - elapsed
+            
+            if remaining_total_time < 5:
+                break
+            
+            models_left = len(self.candidates) - i
+            current_budget = remaining_total_time / models_left
+            
+            try:
+                model.fit(X_train, y_train, time_limit=int(current_budget)) 
+                
+                pred_val = model.predict(X_val)
+                val_predictions[model.name] = pred_val
+                self.trained_models[model.name] = model
+                
+            except Exception as e:
+                logger.error(f"Model '{model.name}' failed to train. Reason: {e}")
+
+        if not self.trained_models:
+            raise RuntimeError("All candidate models failed to train.")
+
+        logger.info("Optimizing ensemble weights using SLSQP...")
+        self.model_weights, weighted_score = self._optimize_weights(y_val, val_predictions)
+        
+        model_names = list(val_predictions.keys())
+        first_pred = val_predictions[model_names[0]]
+        is_classification = self.task in {ProblemType.BINARY_CLASSIFICATION, ProblemType.MULTICLASS_CLASSIFICATION}
+        
+        X_meta = None
+        if is_classification and first_pred.ndim == 2:
+             X_meta = np.hstack([val_predictions[name] for name in model_names])
+        else:
+             X_meta = np.column_stack([val_predictions[name] for name in model_names])
+             
+        meta_score = float('inf')
+        best_score = weighted_score
+        
+        try:
+            if is_classification:
+                self.meta_model = LogisticRegression(max_iter=1000)
+                self.meta_model.fit(X_meta, y_val)
+                meta_pred = self.meta_model.predict_proba(X_meta)
+                if first_pred.ndim == 1: meta_pred = meta_pred[:, 1]
+                meta_pred = np.clip(meta_pred, 1e-15, 1 - 1e-15)
+                meta_score = log_loss(y_val, meta_pred)
+            else:
+                self.meta_model = Ridge(alpha=1.0)
+                self.meta_model.fit(X_meta, y_val)
+                meta_pred = self.meta_model.predict(X_meta)
+                meta_score = np.sqrt(mean_squared_error(y_val, meta_pred))
+                
+            logger.info(f"Stacking Score: {meta_score:.4f} vs Weighted Score: {weighted_score:.4f}")
+            
+            if meta_score < weighted_score:
+                self.stacking_active = True
+                best_score = meta_score
+                logger.info(">> Stacking Strategy WON. Using Meta-Learner.")
+            else:
+                self.stacking_active = False
+                self.meta_model = None
+                logger.info(">> Weighted Ensemble WON. Using SLSQP Weights.")
+                
+        except Exception as e:
+            logger.warning(f"Stacking training failed: {e}. Fallback to Weighted Ensemble.")
+            self.stacking_active = False
+            
+        return best_score
+
     def fit(self, dataset: Dataset, time_limit: int = 300) -> ModelBlueprint:
-        """
-        Orchestrates the training pipeline: Feature Engineering -> Split -> Train -> Optimize -> Refit.
-
-        Args:
-            dataset (Dataset): The training data.
-            time_limit (int): Global time budget in seconds.
-
-        Returns:
-            ModelBlueprint: The training summary and artifacts.
-
-        Raises:
-            RuntimeError: If no models could be trained successfully.
-        """
         start_time = time.time()
         X, y = dataset.get_X_y()
         self.feature_dtypes = dataset.features.dtypes 
+        
+        # Store Stats for Rich Output
+        if self.task == ProblemType.REGRESSION:
+            self.train_stats = {
+                "mean": float(y.mean()),
+                "min": float(y.min()),
+                "max": float(y.max()),
+                "std": float(y.std())
+            }
+        elif self.task in [ProblemType.BINARY_CLASSIFICATION, ProblemType.MULTICLASS_CLASSIFICATION]:
+            self.train_stats = {
+                "classes": sorted(y.unique().tolist()),
+                "counts": y.value_counts().to_dict()
+            }
         
         is_tabular = self.task in [ProblemType.REGRESSION, ProblemType.BINARY_CLASSIFICATION, ProblemType.MULTICLASS_CLASSIFICATION]
         
@@ -97,132 +165,18 @@ class BaseEngine(ABC):
 
         logger.info(f"Engine execution started. Training set: {len(X_train)} samples, Validation set: {len(X_val)} samples.")
 
-        # --- Large Dataset Optimization: Candidate Selection ---
+        # --- Large Dataset Optimization ---
         if len(X_train) > 50000:
-            logger.info("Large dataset detected (>50k samples). Running Candidate Selection on subsample...")
-            try:
-                # Subsample 50k
-                sub_size = 50000
-                if self.task in [ProblemType.BINARY_CLASSIFICATION, ProblemType.MULTICLASS_CLASSIFICATION]:
-                    X_sub, _, y_sub, _ = train_test_split(X_train, y_train, train_size=sub_size, stratify=y_train, random_state=42)
-                else:
-                    X_sub, _, y_sub, _ = train_test_split(X_train, y_train, train_size=sub_size, random_state=42)
-                
-                selection_scores = {}
-                # Allocate 30% of budget or at least 20s for selection
-                sel_budget = max(int(time_limit * 0.3), 20)
-                budget_per_model = max(int(sel_budget / len(self.candidates)), 5)
-                
-                for model in self.candidates:
-                    try:
-                        model.fit(X_sub, y_sub, time_limit=budget_per_model)
-                        preds = model.predict(X_val)
-                        
-                        score = float('inf')
-                        if self.task in [ProblemType.BINARY_CLASSIFICATION, ProblemType.MULTICLASS_CLASSIFICATION]:
-                            # Clip for safety
-                            preds = np.clip(preds, 1e-15, 1 - 1e-15)
-                            score = log_loss(y_val, preds)
-                        else:
-                            score = mean_squared_error(y_val, preds)
-                        
-                        selection_scores[model.name] = score
-                    except Exception as e:
-                        logger.warning(f"Selection training failed for {model.name}: {e}")
-                
-                # Keep Top 2
-                if selection_scores:
-                    best_names = sorted(selection_scores, key=selection_scores.get)[:2]
-                    logger.info(f"Selected best candidates: {best_names}")
-                    self.candidates = [c for c in self.candidates if c.name in best_names]
-                    
-            except Exception as e:
-                logger.warning(f"Candidate selection failed: {e}. Proceeding with all models.")
+            pass
 
         if not self.candidates: 
             raise RuntimeError("No models registered. Please register models via the EngineFactory.")
         
-        val_predictions = {}
-        remaining_models = len(self.candidates)
-        
-        for i, model in enumerate(self.candidates):
-            elapsed = time.time() - start_time
-            remaining_total_time = time_limit - elapsed
-            
-            if remaining_total_time < 5:
-                logger.warning(f"Global time limit reached. Skipping remaining {remaining_models - i} models.")
-                break
-            
-            models_left = remaining_models - i
-            current_budget = remaining_total_time / models_left
-            
-            try:
-                model.fit(X_train, y_train, time_limit=int(current_budget)) 
-                
-                pred_val = model.predict(X_val)
-                val_predictions[model.name] = pred_val
-                self.trained_models[model.name] = model
-                
-            except Exception as e:
-                logger.error(f"Model '{model.name}' failed to train. Reason: {e}")
+        best_score = self._fit_candidates_and_ensemble(X_train, y_train, X_val, y_val, time_limit, start_time)
 
-        if not self.trained_models:
-            raise RuntimeError("All candidate models failed to train. Please check data quality or constraints.")
-
-        logger.info("Optimizing ensemble weights using SLSQP...")
-        self.model_weights, best_score = self._optimize_weights(y_val, val_predictions)
-
-        # --- Stacking (Blended Ensemble) ---
-        # Construct Meta-Features
-        model_names = list(val_predictions.keys())
-        first_pred = val_predictions[model_names[0]]
-        is_classification = self.task in {ProblemType.BINARY_CLASSIFICATION, ProblemType.MULTICLASS_CLASSIFICATION}
-        
-        X_meta = None
-        if is_classification and first_pred.ndim == 2:
-             # Multiclass: (N, C, M) -> flatten to (N, C*M) or just use probabilities as features
-             X_meta = np.hstack([val_predictions[name] for name in model_names])
-        else:
-             # Regression/Binary(1D): (N, M)
-             X_meta = np.column_stack([val_predictions[name] for name in model_names])
-             
-        # Train Meta-Learner
-        meta_score = float('inf')
-        try:
-            if is_classification:
-                self.meta_model = LogisticRegression(max_iter=1000)
-                self.meta_model.fit(X_meta, y_val)
-                meta_pred = self.meta_model.predict_proba(X_meta)
-                if first_pred.ndim == 1: meta_pred = meta_pred[:, 1] # Binary case adjustment
-                
-                meta_pred = np.clip(meta_pred, 1e-15, 1 - 1e-15)
-                meta_score = log_loss(y_val, meta_pred)
-            else:
-                self.meta_model = Ridge(alpha=1.0)
-                self.meta_model.fit(X_meta, y_val)
-                meta_pred = self.meta_model.predict(X_meta)
-                meta_score = np.sqrt(mean_squared_error(y_val, meta_pred))
-                
-            logger.info(f"Stacking Score: {meta_score:.4f} vs Weighted Score: {best_score:.4f}")
-            
-            if meta_score < best_score:
-                self.stacking_active = True
-                best_score = meta_score
-                logger.info(">> Stacking Strategy WON. Using Meta-Learner.")
-            else:
-                self.stacking_active = False
-                self.meta_model = None
-                logger.info(">> Weighted Ensemble WON. Using SLSQP Weights.")
-                
-        except Exception as e:
-            logger.warning(f"Stacking training failed: {e}. Fallback to Weighted Ensemble.")
-            self.stacking_active = False
-
-        # Refit Logic Optimization
         elapsed_so_far = time.time() - start_time
         remaining_time = time_limit - elapsed_so_far
         
-        # If Stacking, we need all models. If Weighted, only non-zero weights.
         if self.stacking_active:
             active_models = list(self.trained_models.keys())
         else:
@@ -230,14 +184,12 @@ class BaseEngine(ABC):
         
         if active_models and remaining_time > 5:
             logger.info(f"Refitting {len(active_models)} active models on full dataset (Time left: {remaining_time:.1f}s)...")
-            
-            # Distribute remaining time among active models
+            X = X.reindex(sorted(X.columns), axis=1)
             time_per_model = remaining_time / len(active_models)
             
             for name in active_models:
                 model = self.trained_models[name]
                 try:
-                    # Use at least 5 seconds or the allocated share
                     budget = max(5, int(time_per_model))
                     model.fit(X, y, time_limit=budget) 
                 except Exception as e:
@@ -248,27 +200,19 @@ class BaseEngine(ABC):
         return self._create_blueprint(dataset, best_score)
 
     def predict(self, X: pd.DataFrame) -> Any:
-        """
-        Predicts target values for new data using the weighted ensemble.
-        
-        Args:
-            X (pd.DataFrame): Input features.
-
-        Returns:
-            Any: Combined predictions (np.ndarray or pd.Series).
-        """
         X_processed = X.copy()
         
         if self.feature_engineer:
             try:
                 X_processed = self.feature_engineer.transform(X)
             except Exception as e:
-                logger.warning(f"Feature transformation failed during prediction: {e}. Falling back to raw features.")
                 pass 
+
+        X_processed = X_processed.reindex(sorted(X_processed.columns), axis=1)
 
         preds = {}
         target_models = self.trained_models.keys() if self.stacking_active else [n for n, w in self.model_weights.items() if w > 0]
-
+        
         for name in target_models:
             if name in self.trained_models:
                 preds[name] = self.trained_models[name].predict(X_processed)
@@ -278,29 +222,86 @@ class BaseEngine(ABC):
         else:
             return self._ensemble_predict(preds)
 
-    def explain(self, X: pd.DataFrame) -> Tuple[float, Dict[str, float]]:
-        """
-        Calculates Feature Importance using Weighted Average SHAP values.
+    def predict_response(self, X: pd.DataFrame) -> InferenceResult:
+        """Generates a rich prediction response with visualization data."""
+        is_classification = self.task in [ProblemType.BINARY_CLASSIFICATION, ProblemType.MULTICLASS_CLASSIFICATION]
         
-        Args:
-            X (pd.DataFrame): Input features to explain.
+        if is_classification:
+            probs = self.predict(X) 
+            n_rows = len(X)
+            if n_rows > 1:
+                return InferenceResult(
+                    prediction=probs.tolist() if isinstance(probs, np.ndarray) else probs,
+                    summary=f"Processed {n_rows} samples.",
+                    details={}
+                )
+            
+            row_prob = probs[0] if probs.ndim == 2 else probs
+            classes = self.train_stats.get('classes', [i for i in range(len(row_prob))])
+            
+            top_idx = np.argmax(row_prob)
+            top_class = classes[top_idx]
+            top_conf = row_prob[top_idx]
+            
+            summary = f"Predicted: {top_class} ({top_conf:.1%})"
+            
+            chart_data = []
+            for cls, p in zip(classes, row_prob):
+                chart_data.append({"label": str(cls), "value": float(p)})
+                
+            viz = VisualizationData(
+                type=VisualizationType.BAR_CHART,
+                title="Class Probabilities",
+                data=chart_data,
+                axes={"x": "Class", "y": "Probability"}
+            )
+            
+            return InferenceResult(
+                prediction=str(top_class),
+                summary=summary,
+                details={"confidence": float(top_conf)},
+                visualization=viz
+            )
+            
+        else: # Regression
+            preds = self.predict(X)
+            val = preds[0]
+            mean_val = self.train_stats.get('mean', 0)
+            
+            diff = val - mean_val
+            direction = "above" if diff > 0 else "below"
+            pct = (abs(diff) / (mean_val + 1e-9)) * 100
+            
+            summary = f"Predicted: {val:,.2f} ({pct:.1f}% {direction} average)"
+            
+            viz = VisualizationData(
+                type=VisualizationType.METRIC_CARD,
+                title="Prediction vs Average",
+                data=[
+                    {"label": "Prediction", "value": float(val)},
+                    {"label": "Global Average", "value": float(mean_val)}
+                ]
+            )
+            
+            return InferenceResult(
+                prediction=float(val),
+                summary=summary,
+                details={"deviation_from_mean": float(diff)},
+                visualization=viz
+            )
 
-        Returns:
-            Tuple[float, Dict[str, float]]: Base value and Dictionary of {feature: contribution}.
-        """
+    def explain(self, X: pd.DataFrame) -> Tuple[float, Dict[str, float]]:
         X_processed = X.copy()
         if self.feature_engineer:
             try:
                 X_processed = self.feature_engineer.transform(X)
-            except Exception:
-                pass
+            except Exception: pass
+
+        X_processed = X_processed.reindex(sorted(X_processed.columns), axis=1)
 
         total_base = 0.0
         total_contribs = {col: 0.0 for col in X_processed.columns}
-        
-        # Explain only weighted ensemble for now (Stacking explainability is complex)
-        # Fallback to weights if stacking is active for explanation approx
-        weights = self.model_weights
+        weights = self.model_weights 
         
         for name, weight in weights.items():
             if weight > 0 and name in self.trained_models:
@@ -311,16 +312,13 @@ class BaseEngine(ABC):
                         if feature in total_contribs:
                             total_contribs[feature] += (val * weight)
                 except Exception as e:
-                    logger.debug(f"Could not explain model {name}: {e}")
-        
+                    pass
         return total_base, total_contribs
 
     def _ensemble_predict(self, preds: Dict[str, np.ndarray]) -> np.ndarray:
-        if not preds: raise RuntimeError("No predictions available for ensemble.")
-        
+        if not preds: raise RuntimeError("No predictions available.")
         first_pred = next(iter(preds.values()))
         final_pred = np.zeros_like(first_pred)
-        
         for name, pred in preds.items():
             weight = self.model_weights.get(name, 0.0)
             final_pred += (pred * weight)
@@ -328,63 +326,35 @@ class BaseEngine(ABC):
 
     def _stacking_predict(self, preds: Dict[str, np.ndarray]) -> np.ndarray:
         model_names = list(preds.keys()) 
-        # Note: Ideally we ensure strict order match with fit. 
-        # Since 'preds' iterates over 'trained_models' keys which is insertion-ordered (Python 3.7+), 
-        # and 'fit' used 'val_predictions' which also followed insertion order of 'candidates', this is safe.
-        
         is_classification = self.task in {ProblemType.BINARY_CLASSIFICATION, ProblemType.MULTICLASS_CLASSIFICATION}
         first_pred = next(iter(preds.values()))
-        
         X_meta = None
         if is_classification and first_pred.ndim == 2:
              X_meta = np.hstack([preds[name] for name in model_names])
         else:
              X_meta = np.column_stack([preds[name] for name in model_names])
-             
         if is_classification:
             final_prob = self.meta_model.predict_proba(X_meta)
-            # Match output shape of base models
             if first_pred.ndim == 1: return final_prob[:, 1]
             return final_prob
         else:
             return self.meta_model.predict(X_meta)
 
     def _optimize_weights(self, y_true: pd.Series, preds: Dict[str, np.ndarray]) -> Tuple[Dict[str, float], float]:
-        """
-        Finds optimal ensemble weights using SLSQP.
-        Fixed to handle Multiclass (3D Tensor) correctly.
-        """
         model_names = list(preds.keys())
         y_true_np = y_true.values
         is_classification = self.task in {ProblemType.BINARY_CLASSIFICATION, ProblemType.MULTICLASS_CLASSIFICATION}
-        
-        # ✅ FIX 1: จัดการ Shape ข้อมูลให้ถูกต้อง
-        # ถ้าเป็น Multiclass: preds[name] คือ (N, C)
-        # เราต้อง Stack เป็น (N, C, M) เพื่อให้ dot กับ weights (M,) ได้ผลลัพธ์ (N, C)
-        
         try:
-            # ดึง prediction array ตัวแรกมาดู shape
             first_pred = preds[model_names[0]]
-            
             if is_classification and first_pred.ndim == 2:
-                # Multiclass Case: Stack along last axis -> (N, Classes, Models)
                 pred_tensor = np.stack([preds[name] for name in model_names], axis=-1)
             else:
-                # Regression/Binary(1D): Stack columns -> (N, Models)
                 pred_tensor = np.column_stack([preds[name] for name in model_names])
-                
-        except ValueError:
-             return self._fallback_optimize_weights(y_true, preds)
+        except ValueError: return self._fallback_optimize_weights(y_true, preds)
 
         def loss_func(weights):
-            # ✅ FIX 2: การคูณ Matrix ให้รองรับทั้ง 2D และ 3D
-            # broadcasting weights: (M,) จะไปคูณกับ dimension สุดท้ายของ pred_tensor
-            
-            # ผลลัพธ์จะเป็น (N, C) สำหรับ multiclass หรือ (N,) สำหรับ regression
             final_pred = np.dot(pred_tensor, weights)
-            
             if is_classification:
-                # Clip เพื่อป้องกัน Log Loss ระเบิด (log(0))
                 final_pred = np.clip(final_pred, 1e-15, 1 - 1e-15)
                 return log_loss(y_true_np, final_pred)
             else:
@@ -396,66 +366,32 @@ class BaseEngine(ABC):
 
         try:
             res = minimize(loss_func, init_guess, method='SLSQP', bounds=bounds, constraints=constraints, tol=1e-4)
-            best_weights = res.x
-            best_score = res.fun
-        except Exception as e:
-            logger.warning(f"SLSQP Optimization failed: {e}. Using fallback weights.")
+            return {name: float(w)/sum(res.x) for name, w in zip(model_names, res.x)}, res.fun
+        except Exception:
             return self._fallback_optimize_weights(y_true, preds)
-
-        weights_dict = {name: float(w) for name, w in zip(model_names, best_weights)}
-        
-        # กรอง weight ที่น้อยมากๆ ออกเพื่อลด noise
-        weights_dict = {k: v for k, v in weights_dict.items() if v > 0.01}
-        
-        # Normalize ให้รวมกันได้ 1 เสมอ
-        total = sum(weights_dict.values())
-        if total > 0:
-            weights_dict = {k: v/total for k, v in weights_dict.items()}
-        else:
-            return self._fallback_optimize_weights(y_true, preds)
-
-        # ถ้าเป็น Regression แปลง MSE กลับเป็น RMSE เพื่อให้ดูง่าย
-        if not is_classification:
-            best_score = np.sqrt(best_score)
-
-        return weights_dict, best_score
 
     def _fallback_optimize_weights(self, y_true, preds) -> Tuple[Dict[str, float], float]:
-        """Simple inverse-error weighting if optimization fails."""
         scores = {}
         is_classification = self.task in {ProblemType.BINARY_CLASSIFICATION, ProblemType.MULTICLASS_CLASSIFICATION}
-        
-        calculated_score = 0.0
-        
+        calc_score = 0.0
         for name, pred in preds.items():
             try:
                 if is_classification: 
-                    # Clip ก่อนคำนวณ fallback
                     safe_pred = np.clip(pred, 1e-15, 1 - 1e-15)
                     err = log_loss(y_true, safe_pred)
                 else: 
                     err = mean_squared_error(y_true, pred)
-            except: 
-                err = float('inf')
-            
+            except: err = float('inf')
             scores[name] = 1 / (err + 1e-9)
-            
-            # เก็บ score ของโมเดลแรกไว้เป็นตัวแทนคร่าวๆ (ดีกว่า return 0.0)
-            if calculated_score == 0.0 and err != float('inf'):
-                calculated_score = err
-            
+            if calc_score == 0.0: calc_score = err
         total = sum(scores.values())
-        if total == 0: 
-            return {k: 1.0/len(scores) for k in scores}, calculated_score
-        
-        weights = {k: v/total for k, v in scores.items()}
-        return weights, calculated_score
+        if total == 0: return {k: 1.0/len(scores) for k in scores}, calc_score
+        return {k: v/total for k, v in scores.items()}, calc_score
 
     def _create_blueprint(self, dataset: Dataset, score: float) -> ModelBlueprint:
         if self.task == ProblemType.REGRESSION: metric_name = "rmse"
         elif self.task == ProblemType.TIME_SERIES_FORECASTING: metric_name = "rmse"
         else: metric_name = "log_loss"
-
         return ModelBlueprint(
             task_type=self.task.value,
             strategy_used="Stacking" if self.stacking_active else "WeightedEnsemble",
