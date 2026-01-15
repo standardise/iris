@@ -1,8 +1,8 @@
 import pandas as pd
 from typing import Union, Optional, Tuple
-from iris.foundation.types import ProblemType
-from iris.foundation.utils import determine_task_type, load_dataset
-from iris.foundation.exception import DataError
+from iris.core.types import ProblemType
+from iris.core.utils import determine_task_type, load_dataset
+from iris.core.exception import DataError
 
 class Dataset:
     def __init__(

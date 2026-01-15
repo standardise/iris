@@ -13,8 +13,8 @@ import logging
 import joblib
 
 from iris.dataset import Dataset
-from iris.engine.factory import EngineFactory
-from iris.foundation.types import (
+from iris.engines.factory import EngineFactory
+from iris.core.types import (
     ModelBlueprint, 
     PredictionAudit, 
     Explanation,
@@ -169,17 +169,12 @@ class Iris:
             raise RuntimeError("predict_proba is only applicable for classification tasks.")
 
         if self._label_encoder:
-            # Get class names from encoder
             col_names = self._label_encoder.classes_
         else:
-            # Fallback if no encoder (e.g. integer targets)
             n_classes = raw_pred.shape[1] if raw_pred.ndim > 1 else 2
             col_names = [f"class_{i}" for i in range(n_classes)]
 
-        # Handle binary case where raw_pred might be (N,) or (N, 1) or (N, 2)
-        # Assuming engine returns (N, C) consistently for classification
         if raw_pred.shape[1] != len(col_names):
-             # Mismatch fallback
              col_names = [f"col_{i}" for i in range(raw_pred.shape[1])]
 
         return pd.DataFrame(raw_pred, columns=col_names, index=df_input.index)

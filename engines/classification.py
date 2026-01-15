@@ -1,6 +1,6 @@
-from iris.engine.base import BaseEngine
-from iris.foundation.types import ProblemType
-from iris.engine.models import LogisticClassifierModel, LGBMClassifierModel, CatBoostClassifierModel, HistGBClassifierModel 
+from iris.engines.base import BaseEngine
+from iris.core.types import ProblemType
+from iris.models.supervised import LogisticClassifierModel, LGBMClassifierModel, CatBoostClassifierModel, HistGBClassifierModel 
 
 class ClassificationEngine(BaseEngine):
     def __init__(self, is_multiclass=False):

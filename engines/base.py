@@ -10,15 +10,15 @@ from sklearn.metrics import mean_squared_error, log_loss
 from sklearn.linear_model import Ridge, LogisticRegression
 
 from iris.dataset import Dataset
-from iris.foundation.types import ModelBlueprint, FeatureSchema, ModelMetrics
-from iris.foundation.types import ProblemType
-from iris.engine.interfaces import CandidateModel
+from iris.core.types import ModelBlueprint, FeatureSchema, ModelMetrics
+from iris.core.types import ProblemType
+from iris.models.base import CandidateModel
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 
 try:
-    from iris.feature_engineering.automated import AutoFeatureEngineer
+    from iris.features.automated import AutoFeatureEngineer
 except ImportError:
     AutoFeatureEngineer = None
 

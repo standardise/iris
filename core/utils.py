@@ -1,7 +1,7 @@
-from iris.foundation.exception import TaskError
-from iris.foundation.types import ProblemType
-from iris.foundation.exception import DataLoadingError 
-from iris.foundation.types import LoadMode
+from iris.core.exception import TaskError
+from iris.core.types import ProblemType
+from iris.core.exception import DataLoadingError 
+from iris.core.types import LoadMode
 from typing import Union, Iterator
 from urllib.parse import urlparse
 import pandas as pd

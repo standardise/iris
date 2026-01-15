@@ -10,7 +10,7 @@ from sklearn.impute import SimpleImputer
 from sklearn.compose import ColumnTransformer
 from sklearn.model_selection import train_test_split
 
-from iris.engine.interfaces import CandidateModel
+from iris.models.base import CandidateModel
 
 try: 
     import lightgbm as lgb

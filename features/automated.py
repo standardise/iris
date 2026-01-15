@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import polars as pl
 from typing import List, Dict, Any, Optional
-from iris.foundation.types import ProblemType
+from iris.core.types import ProblemType
 import logging
 
 logger = logging.getLogger(__name__)

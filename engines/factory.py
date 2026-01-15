@@ -1,7 +1,7 @@
-from iris.foundation.types import ProblemType
-from iris.engine.regressors import RegressionEngine
-from iris.engine.classifiers import ClassificationEngine
-from iris.engine.timeseries.engine import TimeSeriesEngine
+from iris.core.types import ProblemType
+from iris.engines.regression import RegressionEngine
+from iris.engines.classification import ClassificationEngine
+from iris.engines.timeseries import TimeSeriesEngine
 
 class EngineFactory:
     @staticmethod

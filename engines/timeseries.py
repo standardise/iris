@@ -1,7 +1,7 @@
-from iris.engine.base import BaseEngine
-from iris.foundation.types import ProblemType, ModelBlueprint, FeatureSchema, ModelMetrics
-from iris.engine.models import LGBMRegressorModel, CatBoostRegressorModel, RidgeRegressorModel
-from iris.feature_engineering.timeseries import TimeSeriesFeatureEngineer
+from iris.engines.base import BaseEngine
+from iris.core.types import ProblemType, ModelBlueprint, FeatureSchema, ModelMetrics
+from iris.models.supervised import LGBMRegressorModel, CatBoostRegressorModel, RidgeRegressorModel
+from iris.features.timeseries import TimeSeriesFeatureEngineer
 import pandas as pd
 import numpy as np
 import logging

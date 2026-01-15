@@ -1,6 +1,6 @@
-from iris.engine.base import BaseEngine
-from iris.foundation.types import ProblemType
-from iris.engine.models import RidgeRegressorModel, LGBMRegressorModel, CatBoostRegressorModel,HistGBRegressorModel 
+from iris.engines.base import BaseEngine
+from iris.core.types import ProblemType
+from iris.models.supervised import RidgeRegressorModel, LGBMRegressorModel, CatBoostRegressorModel, HistGBRegressorModel
 
 class RegressionEngine(BaseEngine):
     def __init__(self):
