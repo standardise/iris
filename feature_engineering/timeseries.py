@@ -21,14 +21,12 @@ class TimeSeriesFeatureEngineer:
         try:
             pl_df = pl.from_pandas(df)
         except:
-            # Fallback if already polars or weird format
             pl_df = df if isinstance(df, pl.DataFrame) else pl.from_pandas(pd.DataFrame(df))
 
         # Ensure date column is datetime
         pl_df = pl_df.with_columns(pl.col(self.date_col).cast(pl.Datetime))
         
         # 1. Date Parts Extraction
-        # These are safe for gaps and future prediction
         pl_df = pl_df.with_columns([
             pl.col(self.date_col).dt.year().alias("year"),
             pl.col(self.date_col).dt.month().alias("month"),
@@ -36,21 +34,22 @@ class TimeSeriesFeatureEngineer:
             pl.col(self.date_col).dt.weekday().alias("day_of_week"),
             pl.col(self.date_col).dt.ordinal_day().alias("day_of_year"),
             pl.col(self.date_col).dt.quarter().alias("quarter"),
-            # Cyclical Encoding (Crucial for seasonality)
+            # Monthly Seasonality (Period 12)
             (np.pi * 2 * pl.col(self.date_col).dt.month() / 12).sin().alias("month_sin"),
             (np.pi * 2 * pl.col(self.date_col).dt.month() / 12).cos().alias("month_cos"),
+            # Weekly Seasonality (Period 7)
+            (np.pi * 2 * pl.col(self.date_col).dt.weekday() / 7).sin().alias("week_sin"),
+            (np.pi * 2 * pl.col(self.date_col).dt.weekday() / 7).cos().alias("week_cos"),
         ])
         
-        cat_cols = [c for c, t in zip(pl_df.columns, pl_df.dtypes) 
-                   if t in [pl.Utf8, pl.Object, pl.Categorical] and c != self.date_col]
-        
-        min_date = pl_df[self.date_col].min()
+        # 2. Linear Trend (Time Index)
+        # Use a fixed reference point (e.g., 2000-01-01) so time_idx is consistent across train/test
+        epoch = pl.datetime(2000, 1, 1)
         pl_df = pl_df.with_columns(
-            ((pl.col(self.date_col) - min_date).dt.total_days()).alias("time_idx")
+            ((pl.col(self.date_col) - epoch).dt.total_days()).alias("time_idx")
         )
 
         res_df = pl_df.to_pandas()
-        
         self.feature_names_ = [c for c in res_df.columns if c != self.date_col]
         return res_df
 

@@ -1,23 +1,31 @@
 # Iris AutoML
 
-![Python](https://img.shields.io/badge/python-3.10+-blue.svg)
+![Python](https://img.shields.io/badge/python-3.12+-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
-**Iris** is a robust, and high-performance Automated Machine Learning (AutoML) library for Python. Designed for production environments, it prioritizes stability, interpretability, and intelligent resource management over pure speed-at-all-costs.
+**Iris** is an ultra-fast, lightweight, and high-performance Automated Machine Learning (AutoML) library for Python. Powered by **Polars** and **Intel hardware acceleration**, it delivers enterprise-grade accuracy in seconds, not hours.
+
+## Why Iris?
+
+- **Blazing Speed:** Rust-based data processing with **Polars** and parallelized model training.
+- **Hardware Optimized:** Automatically utilizes **Intel Extension for Scikit-learn** for maximum CPU performance.
+- **Gap-Aware Time Series:** Robust forecasting that handles non-continuous dates, multiple IDs, and complex seasonality.
+- **Smart Ensembling:** Advanced **Ridge/Logistic Stacking** meta-learner that corrects model biases automatically.
+- **Enterprise Scaling:** Intelligent candidate selection for massive datasets (tested up to 400k+ rows).
 
 ## Key Features
 
-- **Smart Resource Management:** Dynamically adjusts model complexity based on dataset size and time constraints.
 - **Multi-Strategy Support:**
-  - **Tabular:** Regression, Binary Classification, Multiclass Classification.
-  - **Time Series:** Supports both Recursive (Autoregressive) and Direct (Global Regression) forecasting strategies.
-- **Automated Feature Engineering:** Built-in interaction generation and target encoding.
-- **Explainability:** Integrated SHAP values for model transparency.
-- **Robust Architecture:** Handles categorical data and missing values gracefully without user intervention.
+  - **Tabular:** Binary Classification, Multiclass Classification, Regression.
+  - **Time Series:** Global Regression strategy with sine/cosine seasonality and trend detection.
+- **Polars Feature Engineering:** Automated generation of interactions ($A 	imes B$), ratios ($A/B$), and polynomial features.
+- **Explainability:** Integrated SHAP values for full model transparency.
+- **Intelligent Tuning:** Adaptive hyperparameters that prevent overfitting on small data and maximize convergence on large data.
 
 ## Installation
 
 ```bash
+pip install polars scikit-learn-intelex
 pip install iris-automl
 ```
 
@@ -31,194 +39,84 @@ pip install .
 
 ## Quick Start & Examples
 
-Iris simplifies the ML workflow into three steps: **Load**, **Learn**, and **Predict**. It automatically detects the problem type (Regression, Binary, or Multiclass) based on your target variable.
+Iris simplifies the ML workflow into three steps: **Load**, **Learn**, and **Predict**.
 
-### 1. Regression (Insurance Dataset)
+### 1. Tabular Regression & Classification
 
-_Predicting continuous values (e.g., costs, prices)._
+Iris automatically detects the problem type based on your target variable.
 
 ```python
 import pandas as pd
-from sklearn.model_selection import train_test_split
 from iris import Iris, Dataset
 
 # 1. Load Data
-url = "https://raw.githubusercontent.com/stedy/Machine-Learning-with-R-datasets/master/insurance.csv"
-df = pd.read_csv(url)
-train, test = train_test_split(df, test_size=0.2, random_state=42)
+df = pd.read_csv("my_data.csv")
 
 # 2. Setup Dataset
-train_ds = Dataset(src=train, target="charges")
-test_ds = Dataset(src=test, target="charges")
+dataset = Dataset(src=df, target="target_column")
 
-# 3. Train
+# 3. Train (Blazing fast!)
 model = Iris(verbose=True)
-model.learn(dataset=train_ds, time_limit=60)
+model.learn(dataset=dataset, time_limit=60)
 
 # 4. Predict
-# Returns continuous values
-predictions = model.predict(test_ds)
-print(predictions.head())
-
-# 5. Evaluate
-metrics = model.evaluate(test_ds)
-print(f"RMSE: {metrics['rmse']:.2f}")
+predictions = model.predict(new_data)
 ```
 
-### 2. Binary Classification (Titanic Dataset)
+### 2. Multi-Series Time Series Forecasting
 
-_Predicting one of two classes (e.g., Yes/No, 0/1)._
+Iris handles multiple stores, items, or sensors in a single global model. It captures weekly/monthly seasonality and global trends automatically.
 
 ```python
-import pandas as pd
-from sklearn.model_selection import train_test_split
 from iris import Iris, Dataset
 
-# 1. Load Data
-url = "https://raw.githubusercontent.com/datasciencedojo/datasets/master/titanic.csv"
-df = pd.read_csv(url)
-df = df.drop(columns=['PassengerId', 'Name', 'Ticket', 'Cabin']) # Optional cleanup
-train, test = train_test_split(df, test_size=0.2, random_state=42)
+# Input: date, store_id, product_id, sales, promotion
+dataset = Dataset(
+    src=df,
+    target="sales",
+    date_column="date",
+    id_column="store_id" # Groups series automatically
+)
 
-# 2. Train
-train_ds = Dataset(src=train, target="Survived")
-model = Iris(verbose=True)
-model.learn(dataset=train_ds, time_limit=60)
+model = Iris()
+model.learn(dataset, time_limit=120)
 
-# 3. Predict Classes (returns 0 or 1)
-preds = model.predict(test)
-print("Predictions:", preds.head())
-
-# 4. Predict Probabilities (returns DataFrame with columns [0, 1])
-probs = model.predict_proba(test)
-print("Probabilities:
-", probs.head())
+# Forecast the future by simply providing future dates and IDs
+future_df = pd.DataFrame({
+    "date": ["2024-01-01", "2024-01-02"],
+    "store_id": ["Store_A", "Store_A"]
+})
+forecast = model.predict(future_df)
 ```
 
-**Output:**
+## Core Technologies
 
-```text
-Predictions:
-709    0
-439    0
-840    0
-Name: prediction, dtype: int64
+### 1. The Stacking Meta-Learner
 
-Probabilities:
-          0         1
-709  0.799335  0.200665
-439  0.755787  0.244213
-```
+Iris doesn't just average model outputs. It trains a **Meta-Model** (Ridge or Logistic Regression) that learns _which_ base model (LGBM, CatBoost, etc.) to trust for specific data patterns. This "Stacking" strategy consistently outperforms simple weights.
 
-### 3. Multiclass Classification (Iris Dataset)
+### 2. High-Performance Feature Engineering
 
-_Predicting one of many classes (e.g., setosa, versicolor, virginica)._
+Using **Polars expressions**, Iris generates complex features like:
 
-```python
-import pandas as pd
-from sklearn.model_selection import train_test_split
-from iris import Iris, Dataset
+- **Cyclical Seasonality:** Sine and Cosine transformations of dates.
+- **Contextual Aggregations:** Group-based means and standard deviations.
+- **Non-Linear terms:** Polynomials and safe Ratios.
 
-# 1. Load Data
-url = "https://raw.githubusercontent.com/mwaskom/seaborn-data/master/iris.csv"
-df = pd.read_csv(url)
-train, test = train_test_split(df, test_size=0.2, random_state=42, stratify=df['species'])
+### 3. Dynamic Budgeting
 
-# 2. Train
-train_ds = Dataset(src=train, target="species")
-model = Iris(verbose=True)
-model.learn(dataset=train_ds, time_limit=60)
-
-# 3. Predict Classes (returns strings: 'setosa', 'virginica'...))
-preds = model.predict(test)
-
-# 4. Predict Probabilities (returns DataFrame with columns for each class)
-probs = model.predict_proba(test)
-print("Probabilities:
-", probs.head())
-
-# 5. Evaluate
-test_ds = Dataset(src=test, target="species")
-metrics = model.evaluate(test_ds)
-print(f"Accuracy: {metrics['accuracy']:.2%}")
-```
-
-**Output:**
-
-```text
-Probabilities:
-       setosa  versicolor  virginica
-38   0.978483    0.015262   0.006255
-127  0.020856    0.198125   0.781020
-57   0.068282    0.908386   0.023332
-```
-
-## 📖 Prediction Methods Explained
-
-| Method                      | Returns        | Description                                                                                                                                                                   |
-| :-------------------------- | :------------- | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `model.predict(data)`       | `pd.Series`    | **Best Guess.** <br> • **Regression:** The predicted value.<br> • **Classification:** The predicted class label (e.g., "spam", 0).                                            |
-| `model.predict_proba(data)` | `pd.DataFrame` | **Confidence Scores.** <br> • **Regression:** _Not available._<br> • **Classification:** A DataFrame where columns are class labels and values are probabilities (0.0 - 1.0). |
-
-## Time Series Forecasting
-
-**Recursive Strategy (Default):** Best for short-term accuracy.
-
-```python
-dataset = Dataset(df, target="sales", date_col="date")
-model = Iris(task=ProblemType.TIME_SERIES_FORECASTING)
-
-model.learn(dataset, time_limit=60)
-
-# Forecast next 7 days
-forecast = model.predict(future_steps=7)
-```
-
-**Direct Strategy:** Best for specific date ranges or when using external features.
-
-```python
-model = Iris(task=ProblemType.TIME_SERIES_FORECASTING, strategy="direct")
-model.learn(dataset)
-
-# Forecast specific range
-forecast = model.predict(start_date="2024-01-01", end_date="2024-01-31")
-```
-
-## Advanced Usage
-
-### Model Persistence (Save / Load)
-
-```python
-# Save
-model.save("models/my_model.joblib")
-
-# Load
-from iris import Iris
-loaded_model = Iris.load("models/my_model.joblib")
-```
-
-### Explainability (SHAP)
-
-Generate audit reports with feature contributions.
-
-```python
-audit = model.predict(df.iloc[0:1], explain=True)
-print(f"Prediction: {audit.prediction}")
-print(f"Base Value: {audit.explanation.base_value}")
-print(f"Contributions: {audit.explanation.contributions}")
-```
+The **Smart Refit** logic ensures Iris never exceeds your `time_limit`. It calculates the remaining time after validation and intelligently decides whether to retrain on the full dataset or fallback to validation models.
 
 ## Requirements
 
-- numpy>=2.1.3
-- pandas>=2.3.3
-- pyarrow==2.0.0
-- scikit-learn>=1.7.2
-- scipy>=1.16.3
-- pydantic>=2.11.10
-- lightgbm>=4.6.0
-- catboost>=1.2.8
-- shap>=0.50.0
+- **polars** >= 1.0.0
+- **scikit-learn-intelex** >= 2024.0
+- **numpy** >= 2.1.3
+- **pandas** >= 2.3.3
+- **scikit-learn** >= 1.7.2
+- **lightgbm** >= 4.6.0
+- **catboost** >= 1.2.8
+- **shap** >= 0.50.0
 
 ## License
 
