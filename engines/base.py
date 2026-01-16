@@ -10,7 +10,7 @@ from sklearn.metrics import mean_squared_error, log_loss
 from sklearn.linear_model import Ridge, LogisticRegression
 
 from iris.dataset import Dataset
-from iris.core.types import ModelBlueprint, FeatureSchema, ModelMetrics, InferenceResult, VisualizationData, VisualizationType
+from iris.core.types import ModelBlueprint, FeatureSchema, ModelMetrics, InferenceResult, ContextData, ContextType
 from iris.core.types import ProblemType
 from iris.models.base import CandidateModel
 
@@ -77,6 +77,7 @@ class BaseEngine(ABC):
         logger.info("Optimizing ensemble weights using SLSQP...")
         self.model_weights, weighted_score = self._optimize_weights(y_val, val_predictions)
         
+        # --- Stacking (Blended Ensemble) ---
         model_names = list(val_predictions.keys())
         first_pred = val_predictions[model_names[0]]
         is_classification = self.task in {ProblemType.BINARY_CLASSIFICATION, ProblemType.MULTICLASS_CLASSIFICATION}
@@ -223,7 +224,7 @@ class BaseEngine(ABC):
             return self._ensemble_predict(preds)
 
     def predict_response(self, X: pd.DataFrame) -> InferenceResult:
-        """Generates a rich prediction response with visualization data."""
+        """Generates a rich prediction response with data context."""
         is_classification = self.task in [ProblemType.BINARY_CLASSIFICATION, ProblemType.MULTICLASS_CLASSIFICATION]
         
         if is_classification:
@@ -249,8 +250,8 @@ class BaseEngine(ABC):
             for cls, p in zip(classes, row_prob):
                 chart_data.append({"label": str(cls), "value": float(p)})
                 
-            viz = VisualizationData(
-                type=VisualizationType.BAR_CHART,
+            ctx = ContextData(
+                type=ContextType.DISTRIBUTION,
                 title="Class Probabilities",
                 data=chart_data,
                 axes={"x": "Class", "y": "Probability"}
@@ -260,7 +261,7 @@ class BaseEngine(ABC):
                 prediction=str(top_class),
                 summary=summary,
                 details={"confidence": float(top_conf)},
-                visualization=viz
+                context=ctx
             )
             
         else: # Regression
@@ -274,8 +275,8 @@ class BaseEngine(ABC):
             
             summary = f"Predicted: {val:,.2f} ({pct:.1f}% {direction} average)"
             
-            viz = VisualizationData(
-                type=VisualizationType.METRIC_CARD,
+            ctx = ContextData(
+                type=ContextType.METRIC,
                 title="Prediction vs Average",
                 data=[
                     {"label": "Prediction", "value": float(val)},
@@ -287,7 +288,7 @@ class BaseEngine(ABC):
                 prediction=float(val),
                 summary=summary,
                 details={"deviation_from_mean": float(diff)},
-                visualization=viz
+                context=ctx
             )
 
     def explain(self, X: pd.DataFrame) -> Tuple[float, Dict[str, float]]:

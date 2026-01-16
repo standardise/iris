@@ -43,20 +43,20 @@ class LoadMode(str, Enum):
     Default = "default"
     Lazy = "lazy"
 
-class VisualizationType(str, Enum):
+class ContextType(str, Enum):
     TIME_SERIES = "time_series"
-    BAR_CHART = "bar_chart"
-    SCATTER = "scatter"
-    METRIC_CARD = "metric_card"
+    DISTRIBUTION = "distribution" # Renamed from BAR_CHART for generality
+    RELATION = "relation" # Renamed from SCATTER
+    METRIC = "metric" # Renamed from METRIC_CARD
 
-class VisualizationData(BaseModel):
-    type: VisualizationType
+class ContextData(BaseModel):
+    type: ContextType
     title: str
-    data: List[Dict[str, Any]] # JSON-friendly for frontend (e.g. Recharts)
-    axes: Dict[str, str] = {} # e.g. {"x": "date", "y": "sales"}
+    data: List[Dict[str, Any]] 
+    axes: Dict[str, str] = {} 
 
 class InferenceResult(BaseModel):
-    prediction: Any # The core result (value, class, cluster ID)
-    summary: str # Human-readable explanation
-    details: Dict[str, Any] = {} # Advanced metrics/params
-    visualization: Optional[VisualizationData] = None # Plotting data
+    prediction: Any 
+    summary: str 
+    details: Dict[str, Any] = {} 
+    context: Optional[ContextData] = None # Renamed from visualization

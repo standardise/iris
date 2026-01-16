@@ -5,7 +5,7 @@
 
 **Iris** is an ultra-fast, lightweight, and high-performance Automated Machine Learning (AutoML) library for Python. Powered by **Polars** and **Intel hardware acceleration**, it delivers enterprise-grade accuracy in seconds, not hours.
 
-## Why Iris?
+## 🚀 Why Iris?
 
 - **Blazing Speed:** Rust-based data processing with **Polars** and parallelized model training.
 - **Hardware Optimized:** Automatically utilizes **Intel Extension for Scikit-learn** for maximum CPU performance.
@@ -18,9 +18,10 @@
 - **Multi-Strategy Support:**
   - **Tabular:** Binary Classification, Multiclass Classification, Regression.
   - **Time Series:** Global Regression strategy with sine/cosine seasonality and trend detection.
-- **Polars Feature Engineering:** Automated generation of interactions ($A 	imes B$), ratios ($A/B$), and polynomial features.
+  - **Analysis:** Unsupervised Clustering, Anomaly Detection, and Similarity Search.
+- **Polars Feature Engineering:** Automated generation of interactions ($A \times B$), ratios ($A/B$), and polynomial features.
+- **Contextual Data Output:** Built-in support for rich inference results with metadata for plotting.
 - **Explainability:** Integrated SHAP values for full model transparency.
-- **Intelligent Tuning:** Adaptive hyperparameters that prevent overfitting on small data and maximize convergence on large data.
 
 ## Installation
 
@@ -43,29 +44,19 @@ Iris simplifies the ML workflow into three steps: **Load**, **Learn**, and **Pre
 
 ### 1. Tabular Regression & Classification
 
-Iris automatically detects the problem type based on your target variable.
-
 ```python
-import pandas as pd
 from iris import Iris, Dataset
 
-# 1. Load Data
-df = pd.read_csv("my_data.csv")
-
-# 2. Setup Dataset
 dataset = Dataset(src=df, target="target_column")
+model = Iris()
+model.learn(dataset, time_limit=60)
 
-# 3. Train (Blazing fast!)
-model = Iris(verbose=True)
-model.learn(dataset=dataset, time_limit=60)
-
-# 4. Predict
-predictions = model.predict(new_data)
+# Use predict_response for rich summaries and data context
+result = model.predict_response(new_data)
+print(result.summary)
 ```
 
 ### 2. Multi-Series Time Series Forecasting
-
-Iris handles multiple stores, items, or sensors in a single global model. It captures weekly/monthly seasonality and global trends automatically.
 
 ```python
 from iris import Iris, Dataset
@@ -74,57 +65,38 @@ dataset = Dataset(src=df, target="sales", date_column="date", id_column="store_i
 model = Iris()
 model.learn(dataset)
 
-# Use predict_response for rich summaries and plot data
+# Context includes historical points + future forecast for easy plotting
 result = model.predict_response(future_df)
-print(result.summary)
 ```
 
 ### 3. Unsupervised Analysis (Clustering & Anomaly)
 
-Discover patterns in your data without a target variable.
-
 ```python
 from iris import Analyzer, Dataset
 
-# Clustering / Segmentation
 analyzer = Analyzer(task="clustering")
 analyzer.fit(dataset, n_clusters=5)
 df_clustered = analyzer.get_clusters(dataset)
-
-# Anomaly / Fraud Detection
-analyzer = Analyzer(task="anomaly")
-analyzer.fit(dataset)
-df_anomalies = analyzer.get_anomalies(dataset)
 ```
 
-## 📖 Rich Output Format
+## 📖 Contextual Data Format
 
-The `predict_response()` method returns an `InferenceResult` object designed for frontend integration:
+The `predict_response()` method returns an `InferenceResult` object designed for easy integration with frontend charts (e.g. Recharts, Chart.js):
 
 | Field | Type | Description |
 | :--- | :--- | :--- |
 | `prediction` | `Any` | The raw result (value, class, or cluster ID). |
 | `summary` | `str` | A human-readable summary (e.g. "Predicted 15% above average"). |
-| `visualization` | `Object` | JSON-friendly data for charts (Time Series, Bar, or Metric Card). |
+| `context` | `Object` | JSON-friendly data for charts (Time Series, Distribution, or Metric). |
 | `details` | `dict` | Advanced metrics and model metadata. |
 
 ## Core Technologies
 
 ### 1. The Stacking Meta-Learner
-
-Iris doesn't just average model outputs. It trains a **Meta-Model** (Ridge or Logistic Regression) that learns _which_ base model (LGBM, CatBoost, etc.) to trust for specific data patterns. This "Stacking" strategy consistently outperforms simple weights.
+Iris doesn't just average model outputs. It trains a **Meta-Model** (Ridge or Logistic Regression) that learns *which* base model (LGBM, CatBoost, etc.) to trust for specific data patterns.
 
 ### 2. High-Performance Feature Engineering
-
-Using **Polars expressions**, Iris generates complex features like:
-
-- **Cyclical Seasonality:** Sine and Cosine transformations of dates.
-- **Contextual Aggregations:** Group-based means and standard deviations.
-- **Non-Linear terms:** Polynomials and safe Ratios.
-
-### 3. Dynamic Budgeting
-
-The **Smart Refit** logic ensures Iris never exceeds your `time_limit`. It calculates the remaining time after validation and intelligently decides whether to retrain on the full dataset or fallback to validation models.
+Using **Polars expressions**, Iris generates complex features like Cyclical Seasonality, Contextual Aggregations, and Non-Linear terms at high speed.
 
 ## Requirements
 
