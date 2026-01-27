@@ -5,7 +5,7 @@
 
 **Iris** is an ultra-fast, lightweight, and high-performance Automated Machine Learning (AutoML) library for Python. Powered by **Polars** and **Intel hardware acceleration**, it delivers enterprise-grade accuracy in seconds, not hours.
 
-## 🚀 Why Iris?
+## Why Iris?
 
 - **Blazing Speed:** Rust-based data processing with **Polars** and parallelized model training.
 - **Hardware Optimized:** Automatically utilizes **Intel Extension for Scikit-learn** for maximum CPU performance.
@@ -79,7 +79,7 @@ analyzer.fit(dataset, n_clusters=5)
 df_clustered = analyzer.get_clusters(dataset)
 ```
 
-## 📖 Contextual Data Format
+## Contextual Data Format
 
 The `predict_response()` method returns an `InferenceResult` object designed for easy integration with frontend charts (e.g. Recharts, Chart.js):
 
